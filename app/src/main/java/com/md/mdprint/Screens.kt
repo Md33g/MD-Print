@@ -7,6 +7,10 @@ import android.content.ContextWrapper
 import android.content.Intent
 import android.graphics.Bitmap
 import android.provider.Settings
+import androidx.activity.result.IntentSenderRequest
+import com.google.mlkit.vision.documentscanner.GmsDocumentScannerOptions
+import com.google.mlkit.vision.documentscanner.GmsDocumentScanning
+import com.google.mlkit.vision.documentscanner.GmsDocumentScanningResult
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -63,7 +67,12 @@ private fun fieldColors() = OutlinedTextFieldDefaults.colors(
 fun HomeScreen(vm: AppVM) {
     val ctx = LocalContext.current
     val pickDoc = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { it?.let(vm::loadUri) }
-    val pickPhoto = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { it?.let(vm::loadUri) }
+    val pickPhotos = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { vm.loadUris(it) }
+    val scanLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { r ->
+        if (r.resultCode == Activity.RESULT_OK) {
+            GmsDocumentScanningResult.fromActivityResultIntent(r.data)?.pdf?.uri?.let(vm::loadUri)
+        }
+    }
     val sel = vm.selected()
 
     ScreenBody {
@@ -94,25 +103,43 @@ fun HomeScreen(vm: AppVM) {
         Text("Print", color = C.Muted, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
         Spacer(Modifier.height(10.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            Tile("📄", "Document", "PDF, text") { pickDoc.launch(arrayOf("application/pdf", "text/plain", "image/*")) }
-            Tile("🖼️", "Photo", "JPG, PNG, WebP") { pickPhoto.launch(arrayOf("image/*")) }
+            Tile("📄", "Document", "PDF, text, image") { pickDoc.launch(arrayOf("application/pdf", "text/*", "image/*")) }
+            Tile("🖼️", "Photos", "One or many → PDF") { pickPhotos.launch(arrayOf("image/*")) }
         }
         Spacer(Modifier.height(12.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            Tile("📷", "Scan", "Camera → clean PDF") {
+                ctx.findActivity()?.let { act ->
+                    val opts = GmsDocumentScannerOptions.Builder()
+                        .setGalleryImportAllowed(true)
+                        .setResultFormats(GmsDocumentScannerOptions.RESULT_FORMAT_PDF)
+                        .setScannerMode(GmsDocumentScannerOptions.SCANNER_MODE_FULL)
+                        .build()
+                    GmsDocumentScanning.getClient(opts).getStartScanIntent(act)
+                        .addOnSuccessListener { scanLauncher.launch(IntentSenderRequest.Builder(it).build()) }
+                        .addOnFailureListener { vm.toast("Scanner needs Google Play Services") }
+                }
+            }
             Tile("🌐", "Web page", "Any website") { vm.screen = Screen.Web }
-            Tile("📝", "Text", "Type or paste") { vm.screen = Screen.Text }
         }
         Spacer(Modifier.height(12.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            Tile("📝", "Text / QR", "Type, paste, make QR") { vm.screen = Screen.Text }
             Tile("📋", "Clipboard", "Print copied text") {
                 val cm = ctx.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                 val t = cm.primaryClip?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.coerceToText(ctx)?.toString()
                 if (t.isNullOrBlank()) vm.toast("Clipboard is empty") else vm.loadText(t, "Clipboard")
             }
+        }
+        Spacer(Modifier.height(12.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             Tile("🧾", "Test page", "Check your printer") {
                 vm.loadText("🦁 MD Print – test page\n\nIf you can read this, your printer works.\n\n" +
                     "ABCDEFGHIJKLMNOPQRSTUVWXYZ\nabcdefghijklmnopqrstuvwxyz\n0123456789\n\n" +
                     "Printed with MD Print (com.md.mdprint).", "Test page")
+            }
+            Tile("🔌", "Print services", "Mopria & plugins") {
+                runCatching { ctx.startActivity(Intent(Settings.ACTION_PRINT_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
             }
         }
     }
@@ -135,7 +162,7 @@ private fun RowScope.Tile(emoji: String, title: String, sub: String, onClick: ()
 fun PrintersScreen(vm: AppVM) {
     var showAdd by remember { mutableStateOf(false) }
     ScreenBody {
-        Title("Printers", "Wi-Fi / network printers (IPP, AirPrint, Mopria)")
+        Title("Printers", "IPP, AirPrint, Mopria & raw 9100 · auto-finds on your Wi-Fi")
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             GradButton(if (vm.scanning) "Scanning…" else "🔍  Scan Wi-Fi", Modifier.weight(1f), enabled = !vm.scanning) { vm.scan() }
             OutlineButton("＋  Add by IP", Modifier.weight(1f)) { showAdd = true }
@@ -282,7 +309,7 @@ fun SettingsScreen(vm: AppVM) {
                 Spacer(Modifier.width(12.dp))
                 Column {
                     Text("MD Print", color = C.Text, fontWeight = FontWeight.ExtraBold, fontSize = 18.sp)
-                    Text("Version 1.0.0 · com.md.mdprint", color = C.Muted, fontSize = 12.sp)
+                    Text("Version 1.1.0 · com.md.mdprint", color = C.Muted, fontSize = 12.sp)
                 }
             }
             Spacer(Modifier.height(10.dp))
@@ -313,6 +340,10 @@ fun SettingsPanel(s: PrintSettings, onChange: (PrintSettings) -> Unit) {
         Label("ORIENTATION (photos & text)")
         Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Orient.values().forEach { Chip(it.label, s.orientation == it) { onChange(s.copy(orientation = it)) } }
+        }
+        Label("QUALITY")
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Quality.values().forEach { Chip(it.label, s.quality == it) { onChange(s.copy(quality = it)) } }
         }
         Label("SIDES")
         Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -404,6 +435,7 @@ fun TextScreen(vm: AppVM) {
                 val cm = ctx.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                 cm.primaryClip?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.coerceToText(ctx)?.let { text += it }
             }
+            OutlineButton("▦ QR", Modifier.weight(1f)) { vm.loadQr(text) }
             GradButton("Continue", Modifier.weight(1f), enabled = text.isNotBlank()) { vm.loadText(text, "Text note") }
         }
         Spacer(Modifier.height(12.dp))

@@ -48,17 +48,18 @@ class Store(ctx: Context) {
     }
 
     fun loadSettings(): PrintSettings = PrintSettings(
-        copies = sp.getInt("copies", 1).coerceIn(1, 99),
+        copies = sp.getInt("copies", 1).coerceIn(1, 999),
         paper = runCatching { Paper.valueOf(sp.getString("paper", "A4")!!) }.getOrDefault(Paper.A4),
         color = sp.getBoolean("color", true),
         orientation = runCatching { Orient.valueOf(sp.getString("orient", "AUTO")!!) }.getOrDefault(Orient.AUTO),
         sides = runCatching { Sides.valueOf(sp.getString("sides", "ONE")!!) }.getOrDefault(Sides.ONE),
-        asImage = sp.getBoolean("asImage", false)
+        asImage = sp.getBoolean("asImage", false),
+        quality = runCatching { Quality.valueOf(sp.getString("quality", "NORMAL")!!) }.getOrDefault(Quality.NORMAL)
     )
 
     fun saveSettings(s: PrintSettings) {
         sp.edit().putInt("copies", s.copies).putString("paper", s.paper.name)
             .putBoolean("color", s.color).putString("orient", s.orientation.name)
-            .putString("sides", s.sides.name).putBoolean("asImage", s.asImage).apply()
+            .putString("sides", s.sides.name).putBoolean("asImage", s.asImage).putString("quality", s.quality.name).apply()
     }
 }

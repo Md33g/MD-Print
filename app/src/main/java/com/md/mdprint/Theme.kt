@@ -104,7 +104,7 @@ fun Stepper(value: Int, onChange: (Int) -> Unit) {
         StepBtn("−") { onChange((value - 1).coerceAtLeast(1)) }
         Text("$value", color = C.Text, fontSize = 20.sp, fontWeight = FontWeight.Bold,
             modifier = Modifier.width(52.dp), textAlign = androidx.compose.ui.text.style.TextAlign.Center)
-        StepBtn("+") { onChange((value + 1).coerceAtMost(99)) }
+        StepBtn("+") { onChange((value + 1).coerceAtMost(999)) }
     }
 }
 

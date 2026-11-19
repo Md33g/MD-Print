@@ -5,6 +5,17 @@ import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
 import android.os.Handler
 import android.os.Looper
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
+import java.net.Inet4Address
+import java.net.InetSocketAddress
+import java.net.NetworkInterface
+import java.net.Socket
+import java.util.Collections
 
 /** Finds IPP printers on the local Wi-Fi via mDNS / Bonjour (_ipp._tcp). */
 class Discovery(
@@ -66,5 +77,49 @@ class Discovery(
         listener = null
         queue.clear()
         onDone()
+    }
+}
+
+/** Fallback for networks where mDNS is blocked: probes every host on the local /24 for IPP (631) and raw (9100). */
+object LanScan {
+    private fun prefix(): String? {
+        try {
+            for (ni in Collections.list(NetworkInterface.getNetworkInterfaces())) {
+                if (!ni.isUp || ni.isLoopback) continue
+                for (a in Collections.list(ni.inetAddresses)) {
+                    if (a is Inet4Address && a.isSiteLocalAddress) {
+                        return a.hostAddress!!.split('.').take(3).joinToString(".") + "."
+                    }
+                }
+            }
+        } catch (_: Exception) { }
+        return null
+    }
+
+    private fun open(host: String, port: Int): Boolean = try {
+        Socket().use { it.connect(InetSocketAddress(host, port), 500) }
+        true
+    } catch (_: Exception) { false }
+
+    suspend fun scan(onFound: (Printer) -> Unit) {
+        val pre = prefix() ?: return
+        val sem = Semaphore(48)
+        coroutineScope {
+            (1..254).map { i ->
+                async(Dispatchers.IO) {
+                    sem.withPermit {
+                        val host = pre + i
+                        if (open(host, 631)) {
+                            val p = Printer("$host:631", host, host, 631, "ipp/print")
+                            val r = Ipp.getAttributes(p)
+                            val name = r.attrs["printer-name"] ?: r.attrs["printer-make-and-model"] ?: "IPP printer $host"
+                            onFound(p.copy(name = name))
+                        } else if (open(host, 9100)) {
+                            onFound(Printer("$host:9100", "Raw printer $host", host, 9100, ""))
+                        }
+                    }
+                }
+            }.awaitAll()
+        }
     }
 }

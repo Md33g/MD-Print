@@ -11,6 +11,7 @@ data class Printer(
     val manual: Boolean = false
 ) {
     val uri: String get() = "ipp://$host:$port/${path.trimStart('/')}"
+    val httpsUrl: String get() = "https://$host:$port/${path.trimStart('/')}"
     val httpUrl: String get() = "http://$host:$port/${path.trimStart('/')}"
 }
 
@@ -24,6 +25,8 @@ enum class Paper(val label: String, val ipp: String, val wPt: Int, val hPt: Int)
 
 enum class Orient(val label: String) { AUTO("Auto"), PORTRAIT("Portrait"), LANDSCAPE("Landscape") }
 
+enum class Quality(val label: String, val ipp: Int) { DRAFT("Draft", 3), NORMAL("Normal", 4), HIGH("Best", 5) }
+
 enum class Sides(val label: String, val ipp: String) {
     ONE("Single", "one-sided"),
     LONG("Duplex", "two-sided-long-edge"),
@@ -36,7 +39,8 @@ data class PrintSettings(
     val color: Boolean = true,
     val orientation: Orient = Orient.AUTO,
     val sides: Sides = Sides.ONE,
-    val asImage: Boolean = false
+    val asImage: Boolean = false,
+    val quality: Quality = Quality.NORMAL
 )
 
 data class HistoryItem(
@@ -51,6 +55,7 @@ data class Doc(
     val name: String,
     val kind: String,          // "PDF", "Photo", "Text"
     val file: File? = null,
+    val files: List<File> = emptyList(),
     val text: String? = null
 )
 

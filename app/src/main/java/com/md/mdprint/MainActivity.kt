@@ -47,6 +47,11 @@ class MainActivity : ComponentActivity() {
                 if (uri != null) vm.loadUri(uri)
                 else i.getStringExtra(Intent.EXTRA_TEXT)?.let { vm.loadText(it, "Shared text") }
             }
+            Intent.ACTION_SEND_MULTIPLE -> {
+                val list: List<Uri>? = if (Build.VERSION.SDK_INT >= 33) i.getParcelableArrayListExtra(Intent.EXTRA_STREAM, Uri::class.java)
+                else i.getParcelableArrayListExtra<Uri>(Intent.EXTRA_STREAM)
+                if (!list.isNullOrEmpty()) vm.loadUris(list)
+            }
             Intent.ACTION_VIEW -> i.data?.let { vm.loadUri(it) }
         }
     }

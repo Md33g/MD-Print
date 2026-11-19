@@ -1,8 +1,20 @@
 package com.md.mdprint
 
 import java.io.ByteArrayOutputStream
+import java.net.ConnectException
 import java.net.HttpURLConnection
+import java.net.InetSocketAddress
+import java.net.Socket
 import java.net.URL
+import java.security.SecureRandom
+import java.security.cert.X509Certificate
+import javax.net.ssl.HostnameVerifier
+import javax.net.ssl.HttpsURLConnection
+import javax.net.ssl.SSLContext
+import javax.net.ssl.SSLException
+import javax.net.ssl.SSLSocketFactory
+import javax.net.ssl.TrustManager
+import javax.net.ssl.X509TrustManager
 
 /** Minimal IPP 1.1 client: Print-Job and Get-Printer-Attributes over plain HTTP. */
 object Ipp {
@@ -55,28 +67,60 @@ object Ipp {
         o.str(0x44, "sides", s.sides.ipp)
         o.str(0x44, "print-color-mode", if (s.color) "color" else "monochrome")
         o.str(0x44, "media", s.paper.ipp)
+        o.i32(0x23, "print-quality", s.quality.ipp)
         o.write(0x03)
         o.write(data)
         return send(p, o.toByteArray())
     }
 
+    // Printers on a LAN usually have self-signed certificates, so TLS to the printer itself skips CA validation.
+    private val trustAll: SSLSocketFactory by lazy {
+        val tm = arrayOf<TrustManager>(object : X509TrustManager {
+            override fun checkClientTrusted(c: Array<X509Certificate>?, a: String?) {}
+            override fun checkServerTrusted(c: Array<X509Certificate>?, a: String?) {}
+            override fun getAcceptedIssuers(): Array<X509Certificate> = arrayOf()
+        })
+        SSLContext.getInstance("TLS").apply { init(null, tm, SecureRandom()) }.socketFactory
+    }
+
+    /** Tries plain HTTP first (or HTTPS for 443/8443) and falls back to the other if the printer refuses. */
     private fun send(p: Printer, body: ByteArray): Result {
+        val tlsFirst = p.port == 443 || p.port == 8443
+        val first = post(if (tlsFirst) p.httpsUrl else p.httpUrl, body, tlsFirst)
+        if (first.ok || first.status >= 0) return first
+        if (first.status == -2 || first.status == -3) {
+            val second = post(if (tlsFirst) p.httpUrl else p.httpsUrl, body, !tlsFirst)
+            if (second.ok || second.status >= 0) return second
+        }
+        return first
+    }
+
+    private fun post(url: String, body: ByteArray, tls: Boolean): Result {
         var c: HttpURLConnection? = null
         return try {
-            c = URL(p.httpUrl).openConnection() as HttpURLConnection
-            c.requestMethod = "POST"
-            c.doOutput = true
-            c.connectTimeout = 6000
-            c.readTimeout = 60000
-            c.setRequestProperty("Content-Type", "application/ipp")
-            c.setFixedLengthStreamingMode(body.size)
-            c.outputStream.use { it.write(body) }
-            val code = c.responseCode
-            if (code != 200) return Result(false, -2, "HTTP $code (printer may need ipps/TLS or a different path)")
-            val resp = c.inputStream.use { it.readBytes() }
+            val conn = URL(url).openConnection() as HttpURLConnection
+            c = conn
+            if (tls && conn is HttpsURLConnection) {
+                conn.sslSocketFactory = trustAll
+                conn.hostnameVerifier = HostnameVerifier { _, _ -> true }
+            }
+            conn.requestMethod = "POST"
+            conn.doOutput = true
+            conn.connectTimeout = 6000
+            conn.readTimeout = 120000
+            conn.setRequestProperty("Content-Type", "application/ipp")
+            conn.setFixedLengthStreamingMode(body.size)
+            conn.outputStream.use { it.write(body) }
+            val code = conn.responseCode
+            if (code != 200) return Result(false, -2, "HTTP $code")
+            val resp = conn.inputStream.use { it.readBytes() }
             if (resp.size < 8) return Result(false, -1, "Empty response")
             val st = (resp[2].toInt() and 0xff shl 8) or (resp[3].toInt() and 0xff)
             Result(st < 0x0100, st, statusText(st), parse(resp))
+        } catch (e: ConnectException) {
+            Result(false, -3, e.message ?: "Cannot connect")
+        } catch (e: SSLException) {
+            Result(false, -3, e.message ?: "TLS error")
         } catch (e: Exception) {
             Result(false, -1, e.message ?: "Network error")
         } finally {
@@ -123,4 +167,22 @@ object Ipp {
         } catch (_: Exception) { }
         return m
     }
+}
+
+/** Raw TCP "JetDirect" printing (port 9100): streams the file straight to the printer. */
+object RawPort {
+    fun send(host: String, port: Int, data: ByteArray): Ipp.Result = try {
+        Socket().use { sock ->
+            sock.connect(InetSocketAddress(host.trim('[', ']'), port), 6000)
+            sock.getOutputStream().apply { write(data); flush() }
+        }
+        Ipp.Result(true, 0, "OK")
+    } catch (e: Exception) {
+        Ipp.Result(false, -1, e.message ?: "Cannot reach port $port")
+    }
+
+    fun ping(host: String, port: Int): Boolean = try {
+        Socket().use { it.connect(InetSocketAddress(host.trim('[', ']'), port), 3000) }
+        true
+    } catch (_: Exception) { false }
 }

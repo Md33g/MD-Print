@@ -3,6 +3,12 @@ package com.md.mdprint
 import android.app.Activity
 import android.app.Application
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.Color
+import com.google.zxing.BarcodeFormat
+import com.google.zxing.qrcode.QRCodeWriter
+import java.io.File
+import kotlinx.coroutines.Job
 import android.net.Uri
 import android.print.PrintManager
 import android.widget.Toast
@@ -32,6 +38,9 @@ class AppVM(app: Application) : AndroidViewModel(app) {
     var status by mutableStateOf("")
 
     private var discovery: Discovery? = null
+    private var lanJob: Job? = null
+    private var mdnsRunning = false
+    private var lanRunning = false
 
     init {
         printers.addAll(store.loadPrinters())
@@ -47,12 +56,34 @@ class AppVM(app: Application) : AndroidViewModel(app) {
     fun updateSettings(s: PrintSettings) { settings = s; store.saveSettings(s) }
 
     // ---- documents ----
-    fun loadUri(uri: Uri) {
+    fun loadUri(uri: Uri) = loadUris(listOf(uri))
+
+    fun loadUris(uris: List<Uri>) {
+        if (uris.isEmpty()) return
         viewModelScope.launch {
             busy = true; status = ""
-            val d = withContext(Dispatchers.IO) { runCatching { Pdf.docFromUri(ctx, uri) }.getOrNull() }
+            val d = withContext(Dispatchers.IO) { runCatching { Pdf.docFromUris(ctx, uris) }.getOrNull() }
             busy = false
             if (d == null) toast("Unsupported or unreadable file") else { doc = d; screen = Screen.Setup }
+        }
+    }
+
+    fun loadQr(text: String) {
+        if (text.isBlank()) { toast("Nothing to encode"); return }
+        viewModelScope.launch {
+            busy = true; status = ""
+            val f = withContext(Dispatchers.IO) {
+                runCatching {
+                    val n = 900
+                    val m = QRCodeWriter().encode(text, BarcodeFormat.QR_CODE, n, n)
+                    val px = IntArray(n * n) { i -> if (m.get(i % n, i / n)) Color.BLACK else Color.WHITE }
+                    val bmp = Bitmap.createBitmap(px, n, n, Bitmap.Config.ARGB_8888)
+                    val dir = File(ctx.cacheDir, "docs").also { it.mkdirs() }
+                    File(dir, "qr_${System.nanoTime()}.png").also { out -> out.outputStream().use { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) } }
+                }.getOrNull()
+            }
+            busy = false
+            if (f == null) toast("Could not create QR code") else { doc = Doc("QR code", "Photo", files = listOf(f)); screen = Screen.Setup }
         }
     }
 
@@ -64,14 +95,21 @@ class AppVM(app: Application) : AndroidViewModel(app) {
     }
 
     // ---- printers ----
+    private fun addFound(p: Printer) { if (found.none { it.id == p.id }) found.add(p) }
+
     fun scan() {
         if (scanning) return
-        found.clear(); scanning = true
-        discovery = Discovery(ctx, { p -> if (found.none { it.id == p.id }) found.add(p) }, { scanning = false })
+        found.clear()
+        mdnsRunning = true; lanRunning = true; scanning = true
+        discovery = Discovery(ctx, { addFound(it) }, { mdnsRunning = false; scanning = mdnsRunning || lanRunning })
             .also { it.start() }
+        lanJob = viewModelScope.launch {
+            try { LanScan.scan { p -> viewModelScope.launch { addFound(p) } } }
+            finally { lanRunning = false; scanning = mdnsRunning || lanRunning }
+        }
     }
 
-    fun stopScan() { discovery?.stop() }
+    fun stopScan() { discovery?.stop(); lanJob?.cancel() }
 
     fun addPrinter(p: Printer) {
         val i = printers.indexOfFirst { it.id == p.id }
@@ -91,12 +129,18 @@ class AppVM(app: Application) : AndroidViewModel(app) {
     fun test(p: Printer) {
         info[p.id] = "Checking…"
         viewModelScope.launch {
-            val r = withContext(Dispatchers.IO) { Ipp.getAttributes(p) }
-            info[p.id] = if (r.ok) {
-                val state = when (r.attrs["printer-state"]) { "3" -> "Ready"; "4" -> "Printing"; "5" -> "Stopped"; else -> "Online" }
-                val model = r.attrs["printer-make-and-model"] ?: ""
-                "● $state  $model".trim()
-            } else "✕ ${r.message}"
+            val text = withContext(Dispatchers.IO) {
+                if (p.port == 9100) {
+                    if (RawPort.ping(p.host, p.port)) "● Raw port 9100 open" else "✕ Cannot reach port 9100"
+                } else {
+                    val r = Ipp.getAttributes(p)
+                    if (r.ok) {
+                        val state = when (r.attrs["printer-state"]) { "3" -> "Ready"; "4" -> "Printing"; "5" -> "Stopped"; else -> "Online" }
+                        "● $state  ${r.attrs["printer-make-and-model"] ?: ""}".trim()
+                    } else "✕ ${r.message}"
+                }
+            }
+            info[p.id] = text
         }
     }
 
@@ -119,6 +163,12 @@ class AppVM(app: Application) : AndroidViewModel(app) {
             val res = withContext(Dispatchers.IO) {
                 runCatching {
                     val f = Pdf.prepare(ctx, d, s)
+                    if (p.port == 9100) {
+                        val bytes = f.readBytes()
+                        var r = Ipp.Result(true, 0, "OK")
+                        repeat(s.copies) { if (r.ok) r = RawPort.send(p.host, p.port, bytes) }
+                        return@runCatching r
+                    }
                     if (!s.asImage) {
                         val r = Ipp.printJob(p, d.name, "application/pdf", s, f.readBytes())
                         if (r.ok || r.status < 0) return@runCatching r
@@ -158,5 +208,5 @@ class AppVM(app: Application) : AndroidViewModel(app) {
         store.saveHistory(history)
     }
 
-    override fun onCleared() { discovery?.stop() }
+    override fun onCleared() { discovery?.stop(); lanJob?.cancel() }
 }

@@ -4,7 +4,8 @@ Premium blue + AMOLED black printing app for Android (`com.md.mdprint`).
 
 **Features:** print PDFs, photos, text, clipboard, web pages · Wi-Fi printer discovery (mDNS/IPP) · add printer by IP ·
 direct IPP printing (PDF with automatic image fallback) · system print dialog (Mopria/any print service) ·
-copies, paper size, colour/B&W, duplex, orientation · live preview · job history · "Share to MD Print" from any app.
+📷 document scanner (Google ML Kit, free, no API key) · QR code printing · multi-photo → one PDF · whole-network printer scan · raw port 9100 & IPPS/TLS printers · print quality ·
+copies (up to 999), paper size, colour/B&W, duplex, orientation · live preview · job history · "Share to MD Print" from any app.
 
 ## Build the APK with GitHub Actions
 1. Create a repo, push this folder to `main`.

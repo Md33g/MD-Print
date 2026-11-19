@@ -44,14 +44,25 @@ object Pdf {
         }
         val f = File(dir(ctx), "src_${System.nanoTime()}")
         ctx.contentResolver.openInputStream(uri)!!.use { i -> f.outputStream().use { o -> i.copyTo(o) } }
-        return if (kind == "Text") {
-            val t = f.readText().take(2_000_000); f.delete(); Doc(name, kind, text = t)
-        } else Doc(name, kind, file = f)
+        return when (kind) {
+            "Text" -> { val t = f.readText().take(50_000_000); f.delete(); Doc(name, kind, text = t) }
+            "Photo" -> Doc(name, kind, files = listOf(f))
+            else -> Doc(name, kind, file = f)
+        }
+    }
+
+    fun docFromUris(ctx: Context, uris: List<Uri>): Doc {
+        if (uris.size == 1) return docFromUri(ctx, uris[0])
+        val docs = uris.mapNotNull { runCatching { docFromUri(ctx, it) }.getOrNull() }
+        val photos = docs.filter { it.kind == "Photo" }
+        return if (photos.isNotEmpty() && photos.size == docs.size)
+            Doc("${photos.size} photos", "Photo", files = photos.flatMap { it.files })
+        else docs.firstOrNull() ?: error("Nothing readable")
     }
 
     fun prepare(ctx: Context, d: Doc, s: PrintSettings): File = when (d.kind) {
         "PDF" -> d.file!!
-        "Photo" -> imageToPdf(ctx, d.file!!, s)
+        "Photo" -> imageToPdf(ctx, d.files, s)
         else -> textToPdf(ctx, d.text ?: "", s)
     }
 
@@ -83,28 +94,30 @@ object Pdf {
     private fun pageSize(s: PrintSettings, landscape: Boolean) =
         if (landscape) s.paper.hPt to s.paper.wPt else s.paper.wPt to s.paper.hPt
 
-    private fun imageToPdf(ctx: Context, src: File, s: PrintSettings): File {
-        val bmp = decode(src)
-        val land = when (s.orientation) {
-            Orient.LANDSCAPE -> true
-            Orient.PORTRAIT -> false
-            Orient.AUTO -> bmp.width > bmp.height
-        }
-        val (pw, ph) = pageSize(s, land)
+    private fun imageToPdf(ctx: Context, srcs: List<File>, s: PrintSettings): File {
         val doc = PdfDocument()
-        val page = doc.startPage(PdfDocument.PageInfo.Builder(pw, ph, 1).create())
-        val m = if (s.paper == Paper.PHOTO) 0f else 18f
-        val scale = min((pw - 2 * m) / bmp.width, (ph - 2 * m) / bmp.height)
-        val w = bmp.width * scale
-        val h = bmp.height * scale
-        val l = (pw - w) / 2f
-        val t = (ph - h) / 2f
-        page.canvas.drawBitmap(bmp, null, RectF(l, t, l + w, t + h), Paint(Paint.FILTER_BITMAP_FLAG))
-        doc.finishPage(page)
+        srcs.forEachIndexed { idx, src ->
+            val bmp = decode(src)
+            val land = when (s.orientation) {
+                Orient.LANDSCAPE -> true
+                Orient.PORTRAIT -> false
+                Orient.AUTO -> bmp.width > bmp.height
+            }
+            val (pw, ph) = pageSize(s, land)
+            val page = doc.startPage(PdfDocument.PageInfo.Builder(pw, ph, idx + 1).create())
+            val m = if (s.paper == Paper.PHOTO) 0f else 18f
+            val scale = min((pw - 2 * m) / bmp.width, (ph - 2 * m) / bmp.height)
+            val w = bmp.width * scale
+            val h = bmp.height * scale
+            val l = (pw - w) / 2f
+            val t = (ph - h) / 2f
+            page.canvas.drawBitmap(bmp, null, RectF(l, t, l + w, t + h), Paint(Paint.FILTER_BITMAP_FLAG))
+            doc.finishPage(page)
+            bmp.recycle()
+        }
         val f = out(ctx)
         f.outputStream().use { doc.writeTo(it) }
         doc.close()
-        bmp.recycle()
         return f
     }
 
